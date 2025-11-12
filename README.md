@@ -1,4 +1,4 @@
-# RAG Retrieval/Reranking Evaluator
+# Information Retrieval Evaluator
 
 A lightweight, LLM‑based evaluation framework to assess **retrieval** and **reranking** quality for Retrieval‑Augmented Generation (RAG). Given a set of queries and their retrieved (and optionally reranked) documents, the framework asks an LLM to judge whether **an answer is present** in the top‑k results and computes metrics such as **Answer Presence@k**, **Precision@k**, **Recall@k**, and **Accuracy@k**.
 
