@@ -272,4 +272,4 @@ MIT — do whatever you want, but attribution appreciated.
 
 ## 🙌 Acknowledgements
 Inspired by practical needs in building reliable RAG pipelines where recall of at least one answerable chunk matters most.
-
+The default prompt was found in: https://blog.ml6.eu/unsupervised-evaluation-of-semantic-retrieval-by-generating-relevance-judgments-with-an-llm-judge-ea244cc80908
