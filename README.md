@@ -1,74 +1,137 @@
-# IR-LLM-Judge
+# RAG Retrieval/Reranking Evaluator
 
-The goal of this evaluation framework is to assess the effectiveness of a retrieval or reranking pipeline in the context of Retrieval-Augmented Generation (RAG) to create a chatbot. Given a set of user queries and their corresponding retrieved or reranked documents, the framework uses an LLM (e.g., gpt-4o-mini or gpt-4.1-mini) to determine whether a relevant answer is present within the top-k results.
-________________________________________
-🧪 Evaluation Method
-For each query in the test set:
-1.	Retrieve and rerank documents using the selected embedding and reranking models.
-2.	Label the relevance of top-k documents using an LLM (binary classification: YES/NO).
-3.	Compute metrics including Answer Presence@k: whether any relevant document is present in top-k.
-By averaging Answer Presence@k across all queries, the framework estimates the likelihood that a system can retrieve at least one answerable document, which is crucial for effective RAG performance.
+A lightweight, LLM‑based evaluation framework to assess **retrieval** and **reranking** quality for Retrieval‑Augmented Generation (RAG). Given a set of queries and their retrieved (and optionally reranked) documents, the framework asks an LLM to judge whether **an answer is present** in the top‑k results and computes metrics such as **Answer Presence@k**, **Precision@k**, **Recall@k**, and **Accuracy@k**.
 
-📘 Evaluator Class 
-The Evaluator class is designed to assess the relevance of retrieved documents with respect to a given query using an OpenAI language model (default: gpt-4o-mini). It generates binary labels ("YES"/"NO") for each document's relevance and computes standard evaluation metrics like precision, recall, and accuracy.
-🔧 Class Initialization
-Evaluator(api_key: str, base_url: str, model: str = "gpt-4o-mini", prompt_template: str = None)
+---
 
-Parameters:
-•	api_key (str): Your OpenAI API key for authentication.
-•	base_url (str): The base URL of the OpenAI-compatible API endpoint.
-•	model (str, optional): Model name to be used for evaluation. Defaults to "gpt-4o-mini".
-•	prompt_template (str, optional): Custom prompt template. If not provided, a default binary relevance classification prompt is used.
+## ✨ Why this matters
+RAG works only if your retriever hands the generator at least one **answerable** chunk. This repo measures exactly that: *“What’s the probability that at least one relevant document appears in the top‑k?”* — a practical proxy for end‑to‑end success.
 
-📥 Method: get_relevance_labels
-get_relevance_labels(docs: list[dict], query: str, top_k=None) -> dict
+---
 
-Description:
-Sends each document-query pair to the model and determines whether the document is relevant to the query based on a "YES"/"NO" response.
-Prompt:
-prompt = f"""Here are a question and a retrieved passage from a text corpus from the same domain as the question.
+## 🧪 Evaluation Method
+For each query in your test set:
+1. **Retrieve & rerank** with your chosen embedding model and reranker.
+2. **Label relevance** of the top‑k docs with an LLM (binary: **YES/NO** = answer present or not).
+3. **Compute metrics**, notably **Answer Presence@k** (1 if any relevant doc is in top‑k, else 0).
+
+Average **Answer Presence@k** across queries to estimate how often your system provides at least one answerable document — crucial for robust RAG.
+
+---
+
+## 🧰 Evaluator Class
+The `Evaluator` class calls an OpenAI‑compatible API (e.g., `gpt-4o-mini`, `gpt-4.1-mini`) to label each document as relevant or not.
+
+```python
+class Evaluator:
+    def __init__(self, api_key: str, base_url: str, model: str = "gpt-4o-mini", prompt_template: str = None):
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.model = model
+        self.prompt_template = prompt_template or """Here are a question and a retrieved passage from a text corpus from the same domain as the question.
 
 Can you judge whether an answer to the question can be derived from the retrieved passage, simply answer either “YES” or “NO”.
 
 <binary>
 
-Question: {query}; Retrieved Passage: {doc_text}"""
+Question: {query}; Retrieved Passage: {document}"""
+        self.relevance_dict = {}  # stores latest document->label
+        self.relevance_labels = []  # stores latest labels only
 
-Parameters:
-•	docs (list[dict]): A list of documents, where each item is a dictionary with at least a "document" key containing the document text.
-•	query (str): The user query for which relevance is being assessed.
-•	top_k (int, optional): Only evaluate the top k documents from the list.
-Returns:
-•	A dictionary {document_text: relevance_label} where:
-o	relevance_label is 1 if the model says "YES", otherwise 0.
-Side Effects:
-•	Updates internal state:
-o	self.relevance_dict: Latest document-to-label map.
-o	self.relevance_labels: List of relevance labels in ranked order.
-📊 Method: compute_metrics
-compute_metrics(self, ks: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], show = False) -> dict
+    def get_relevance_labels(self, docs: list[dict], query: str, top_k=None) -> dict:
+        """
+        Use GPT-4o Mini to determine if each document is relevant to the query.
+        Stores and returns a dictionary of {'document_text': 1 or 0}
+        """
+        self.relevance_dict = {}
+        for i, doc in enumerate(docs[:top_k]):
+            prompt = self.prompt_template.format(query=query, document=doc["document"])
 
-Description:
-Computes evaluation metrics (Precision, Recall, Accuracy, Answer Presence) at multiple cutoff values of top-k using the most recent labels from get_relevance_labels.
-Parameters:
-•	ks (list[int], optional): List of cutoff values k for computing top-k metrics.
-•	show (bool, optional): If True, prints metric values for each k.
-Returns:
-•	Dictionary of metrics keyed by @k, each containing:
-o	"Accuracy ": TP / k
-o	"Number of Relevant Docs": Number of true positives in top-k
-o	"Answer Presence": Binary 1/0 depending on whether any relevant doc is in top-k
-Raises:
-•	ValueError: If get_relevance_labels() has not been called before metrics computation.
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=1
+            )
 
-📦 Attributes
-•	client: Instance of OpenAI, initialized with provided API key and base URL.
-•	model: Model used for document relevance evaluation.
-•	prompt_template: Prompt used to instruct the model for binary relevance classification.
-•	relevance_dict: Last computed {document_text: label} mapping.
-•	relevance_labels: Ordered list of latest labels (1 for relevant, 0 for not) used for metrics.
+            answer = response.choices[0].message.content.strip().upper()
+            label = 1 if "YES" in answer else 0
+            self.relevance_dict[doc["document"]] = label
 
-🧠 Example Usage
+            print(f"✅ [{i+1}/{len(docs[:top_k])}] Relevance: {answer}")
+
+        self.relevance_labels = list(self.relevance_dict.values())
+        return self.relevance_dict
+
+    def compute_metrics(self, ks: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], show = False) -> dict:
+        """
+        Compute metrics using the most recent relevance labels.
+        """
+        if not self.relevance_labels:
+            raise ValueError("No relevance labels available. Run get_relevance_labels() first.")
+
+        metrics = {}
+        total_relevant = sum(self.relevance_labels)
+
+        for k in ks:
+            topk = self.relevance_labels[:k]
+            tp = sum(topk)
+
+            precision = tp / k if k else 0
+            recall = tp / total_relevant if total_relevant else 0
+            accuracy = tp / k if k else 0
+            binary_acc = 0 if tp == 0 else 1
+
+            metrics[f"@{k}"] = {
+                "Precision": round(precision, 3),
+                "Recall": round(recall, 3),
+                "Accuracy": round(accuracy, 3),
+                "Number of Relevant Docs": tp,
+                "Answer Presence": binary_acc
+            }
+
+        if show:
+            for k, vals in metrics.items():
+                print(f"\nMetrics {k}:")
+                for metric, val in vals.items():
+                    print(f"{metric}: {val}")
+
+        return metrics
+```
+
+> **Note**
+> - `Accuracy` here is equivalent to `Precision` (TP/k) given the binary setup with only positives; it’s included for convenience.
+> - Keep `temperature=0` for determinism across runs.
+
+---
+
+## 📦 Installation
+```bash
+pip install openai  # or your OpenAI-compatible client
+```
+
+If you use a compatible endpoint (e.g., self-hosted or proxy), provide `base_url` accordingly.
+
+---
+
+## ⚙️ Configuration
+Set your credentials in environment variables or directly when constructing the class.
+
+```python
+from openai import OpenAI
+
+EVAL = Evaluator(
+    api_key=os.environ["OPENAI_API_KEY"],
+    base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    model="gpt-4o-mini",
+)
+```
+
+---
+
+## 🚀 Quick Start
+```python
+from openai import OpenAI
+
 evaluator = Evaluator(api_key="...", base_url="...")
 
 docs = [
@@ -77,82 +140,136 @@ docs = [
 ]
 query = "What is the capital of France?"
 
-labels = evaluator.get_relevance_labels(docs, query)
+labels = evaluator.get_relevance_labels(docs, query, top_k=2)
 metrics = evaluator.compute_metrics(show=True)
+```
 
+**Labeling prompt used (default):**
+```text
+Here are a question and a retrieved passage from a text corpus from the same domain as the question.
 
-📈 Evaluating Embedding Models and Rerankers Using the Evaluator Class
-🔍 Purpose
-The Evaluator class can be extended beyond a single query-document pair. When used with a test set containing multiple queries, it allows you to compare the performance of different embedding models, reranking strategies, etc. in information retrieval pipelines.
-✅ Evaluation Strategy
-For each query in the test set:
-1.	Use Evaluator.get_relevance_labels() to label the top-k documents for that query.
-2.	Use Evaluator.compute_metrics() to calculate metrics like Precision, Recall, and especially Answer Presence.
-3.	Store the Answer Presence at each k for every query.
-After processing all queries, compute the average Answer Presence at each top-k
-________________________________________
-⚙️ What can be Evaluated?
-•	Embedding Model
-The vector embedding model used to encode and retrieve documents:
-o	Examples: OpenAI, BGE
-•	Top-K (top_k)
-The number of retrieved documents to evaluate per query (e.g., 20, 30).
-These represent the initial output of the retriever.
-•	Top-N (top_n)
-The number of documents sent to the LLM for final answer generation.
-These are typically selected after reranking (N ≤ K).
-•	Semantic Chunker Threshold
-Controls how documents are chunked semantically (results below use std).
-Threshold values usually range from 1.5 to 3.0, affecting chunk size and coherence.
-•	Reranking Model
-The reranker used to reorder retrieved documents based on query-document relevance:
-o	Examples: FlashRank, Cohere, Jina Rank
+Can you judge whether an answer to the question can be derived from the retrieved passage, simply answer either “YES” or “NO”.
 
+<binary>
 
+Question: {query}; Retrieved Passage: {document}
+```
 
+---
 
+## 🧠 Evaluating Embeddings, Rerankers, & Chunking
+You can apply the evaluator across a test set and compare configurations.
 
+### What can be evaluated?
+- **Embedding model**: e.g., OpenAI vs. BGE
+- **Top‑K (`top_k`)**: size of retrieved list (e.g., 20, 30)
+- **Top‑N (`top_n`)**: docs forwarded to the generator (N ≤ K)
+- **Semantic chunking threshold**: affects chunk size/coherence (typical: 1.5 → 3.0)
+- **Reranking model**: e.g., FlashRank, Cohere, Jina Rank
 
+### Minimal evaluation loop
+```python
+def evaluate_run(evaluator, dataset, top_k=10, ks=(1,3,5,10)):
+    """dataset: list of {"query": str, "docs": list[{"document": str, ...}]}
+    returns: list of per-query metrics dicts
+    """
+    run_results = []
+    for example in dataset:
+        evaluator.get_relevance_labels(example["docs"], example["query"], top_k=top_k)
+        run_results.append(evaluator.compute_metrics(ks=list(ks), show=False))
+    return run_results
 
+from collections import defaultdict
 
+def average_answer_presence(per_query_metrics):
+    # returns {"@k": avg_answer_presence}
+    acc = defaultdict(list)
+    for m in per_query_metrics:
+        for k, vals in m.items():
+            acc[k].append(vals["Answer Presence"])  # 0/1
+    return {k: sum(v)/len(v) for k, v in acc.items()}
 
+# Example usage
+per_query = evaluate_run(evaluator, dataset=my_test_set, top_k=20, ks=(1,2,3,5,10))
+avg_ap = average_answer_presence(per_query)
+print("Average Answer Presence:", avg_ap)
+```
 
+> **Tip:** Run the loop for each configuration (embedding, reranker, chunking threshold, etc.) and compare the averaged **Answer Presence@k** curves.
 
+---
 
+## 📊 Metrics
+For each cutoff **k** using the latest labels (`1` = relevant, `0` = not):
 
+- **Precision@k** = TP / k  
+- **Recall@k** = TP / (# relevant in top‑K)  
+- **Accuracy@k** = TP / k (same as precision here)  
+- **Answer Presence@k** = `1` if TP ≥ 1 else `0`
 
+The framework primarily emphasizes **Answer Presence@k**, a robust proxy for a RAG system’s ability to provide at least one answerable document.
 
+---
 
-Results
-Reranker vs. No Reranker:
- 
- 
+## 📈 Results Templates
+Paste your numbers below to track experiments.
 
+### Reranker vs. No Reranker
+| k | Answer Presence (No Reranker) | Answer Presence (Reranker) |
+|---|-------------------------------:|----------------------------:|
+| 1 |                                |                             |
+| 3 |                                |                             |
+| 5 |                                |                             |
+|10 |                                |                             |
 
+### Semantic Chunker Threshold
+| Threshold | k | Answer Presence |
+|----------:|---|----------------:|
+| 1.5       | 5 |                 |
+| 2.0       | 5 |                 |
+| 2.5       | 5 |                 |
+| 3.0       | 5 |                 |
 
+### BGE vs OpenAI (t = 2)
+| k | Answer Presence (BGE) | Answer Presence (OpenAI) |
+|---|----------------------:|-------------------------:|
+| 1 |                       |                          |
+| 3 |                       |                          |
+| 5 |                       |                          |
+|10 |                       |                          |
 
+### 4.1‑mini vs 4o‑mini
+| k | Answer Presence (4.1‑mini) | Answer Presence (4o‑mini) |
+|---|----------------------------:|---------------------------:|
+| 1 |                             |                            |
+| 3 |                             |                            |
+| 5 |                             |                            |
+|10 |                             |                            |
 
+> Consider also plotting **Answer Presence vs k** for each configuration to visualize gains from reranking or better chunking.
 
-Threshold: 
- 
- 
+---
 
+## 🧯 Practical Notes & Pitfalls
+- **Cost & speed**: Labeling is cheap/fast with small models (e.g., `gpt-4o-mini`), but still scales with dataset size × top‑k.
+- **Determinism**: Keep `temperature=0`. Consider seeding sampling if your client supports it.
+- **Token limits**: Ensure chunks fit comfortably; truncate or summarize if needed.
+- **Prompt sensitivity**: You can pass a custom `prompt_template` to tune strictness.
+- **Label noise**: LLMs can misjudge borderline cases; spot‑check a sample.
 
+---
 
+## 🔌 API Compatibility
+- Works with any OpenAI‑compatible **Chat Completions** API.
+- Set `base_url` to target non‑OpenAI providers (self‑hosted, proxies, etc.).
 
+---
 
+## 📜 License
+MIT — do whatever you want, but attribution appreciated.
 
+---
 
-bge vs openai: (t = 2)
- 
- 
-
-
-
-
-
-
-
-4.1-mini vs 4o-mini:
- 
+## 🙌 Acknowledgements
+Inspired by practical needs in building reliable RAG pipelines where recall of at least one answerable chunk matters most.
 
